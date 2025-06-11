@@ -42,11 +42,11 @@ Der SPC-Diagramm-Generator ist eine webbasierte Anwendung, die es Qualitätsinge
 
 1. **Repository klonen oder Dateien herunterladen**
 ```bash
-git clone https://github.com/yourusername/spc-generator.git
+git clone https://github.com/toukoalvine/--SPC-Diagramm-Generator
 cd spc-generator
 ```
 
-2. **Virtuelle Umgebung erstellen (empfohlen)**
+2. **Virtuelle Umgebung erstellen
 ```bash
 python -m venv spc_env
 source spc_env/bin/activate  # Linux/Mac
