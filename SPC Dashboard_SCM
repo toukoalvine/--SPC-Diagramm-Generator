@@ -1,0 +1,327 @@
+"""
+SPC (Statistical Process Control) Dashboard
+Run this in Anaconda with: python spc_dashboard.py
+"""
+
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+import plotly.express as px
+from plotly.subplots import make_subplots
+from dash import Dash, dcc, html, Input, Output
+import datetime
+from dateutil.relativedelta import relativedelta
+
+# ============================================
+# 1. DATA GENERATION (Replace with your data)
+# ============================================
+
+def generate_sample_data():
+    """Generate sample data for demonstration"""
+    np.random.seed(42)
+    dates = pd.date_range(start='2022-01-01', end='2024-12-31', freq='D')
+    
+    # Generate process data with some outliers
+    values = np.random.normal(loc=100, scale=10, size=len(dates))
+    
+    # Add some outliers
+    outlier_indices = np.random.choice(len(dates), size=20, replace=False)
+    values[outlier_indices] += np.random.choice([-40, 40], size=20)
+    
+    df = pd.DataFrame({
+        'Date': dates,
+        'Value': values,
+        'Process': 'Process A'
+    })
+    
+    return df
+
+# ============================================
+# 2. SPC CALCULATIONS
+# ============================================
+
+class SPCAnalyzer:
+    """Statistical Process Control Analysis"""
+    
+    def __init__(self, df, value_col='Value', date_col='Date'):
+        self.df = df.copy()
+        self.value_col = value_col
+        self.date_col = date_col
+        self.df[date_col] = pd.to_datetime(self.df[date_col])
+        self.calculate_control_limits()
+        
+    def calculate_control_limits(self):
+        """Calculate mean, UCL, and LCL"""
+        self.mean = self.df[self.value_col].mean()
+        self.std = self.df[self.value_col].std()
+        self.ucl = self.mean + (3 * self.std)
+        self.lcl = self.mean - (3 * self.std)
+        
+    def identify_outliers(self):
+        """Identify points outside control limits"""
+        self.df['Is_Outlier'] = (
+            (self.df[self.value_col] > self.ucl) | 
+            (self.df[self.value_col] < self.lcl)
+        )
+        return self.df[self.df['Is_Outlier'] == True]
+    
+    def get_monthly_aggregates(self):
+        """Aggregate data by month"""
+        monthly = self.df.groupby(pd.Grouper(key=self.date_col, freq='M')).agg({
+            self.value_col: 'mean'
+        }).reset_index()
+        monthly.columns = ['Month', 'Value']
+        return monthly
+    
+    def get_current_month_stats(self):
+        """Get current month statistics"""
+        current_date = self.df[self.date_col].max()
+        current_month = self.df[self.df[self.date_col].dt.to_period('M') == 
+                                current_date.to_period('M')][self.value_col].mean()
+        
+        # Previous month
+        prev_month_date = current_date - relativedelta(months=1)
+        prev_month = self.df[self.df[self.date_col].dt.to_period('M') == 
+                             prev_month_date.to_period('M')][self.value_col].mean()
+        
+        # Same month last year
+        same_month_ly = current_date - relativedelta(years=1)
+        same_month_last_year = self.df[self.df[self.date_col].dt.to_period('M') == 
+                                       same_month_ly.to_period('M')][self.value_col].mean()
+        
+        return {
+            'current_month': current_month,
+            'previous_month': prev_month,
+            'same_month_last_year': same_month_last_year,
+            'mom_change': current_month - prev_month,
+            'mom_pct': ((current_month - prev_month) / prev_month * 100) if prev_month else 0,
+            'yoy_change': current_month - same_month_last_year,
+            'yoy_pct': ((current_month - same_month_last_year) / same_month_last_year * 100) 
+                       if same_month_last_year else 0
+        }
+
+# ============================================
+# 3. VISUALIZATION FUNCTIONS
+# ============================================
+
+def create_kpi_card(title, value, change_pct, prefix="", suffix=""):
+    """Create a KPI card with change indicator"""
+    color = 'green' if change_pct >= 0 else 'red'
+    arrow = '▲' if change_pct >= 0 else '▼'
+    
+    return html.Div([
+        html.H4(title, style={'color': '#666', 'margin': '0', 'fontSize': '14px'}),
+        html.H2(f"{prefix}{value:.2f}{suffix}", 
+                style={'color': '#333', 'margin': '10px 0', 'fontSize': '32px'}),
+        html.P(f"{arrow} {abs(change_pct):.2f}%", 
+               style={'color': color, 'margin': '0', 'fontSize': '16px', 'fontWeight': 'bold'})
+    ], style={
+        'backgroundColor': 'white',
+        'padding': '20px',
+        'borderRadius': '8px',
+        'boxShadow': '0 2px 4px rgba(0,0,0,0.1)',
+        'textAlign': 'center',
+        'flex': '1',
+        'margin': '10px'
+    })
+
+def create_control_chart(analyzer):
+    """Create SPC control chart"""
+    monthly = analyzer.get_monthly_aggregates()
+    
+    fig = go.Figure()
+    
+    # Actual values line
+    fig.add_trace(go.Scatter(
+        x=monthly['Month'],
+        y=monthly['Value'],
+        mode='lines+markers',
+        name='Actual',
+        line=dict(color='#1f77b4', width=2),
+        marker=dict(size=6)
+    ))
+    
+    # Identify outliers in monthly data
+    monthly['Is_Outlier'] = (monthly['Value'] > analyzer.ucl) | (monthly['Value'] < analyzer.lcl)
+    outliers = monthly[monthly['Is_Outlier']]
+    
+    # Outlier points
+    fig.add_trace(go.Scatter(
+        x=outliers['Month'],
+        y=outliers['Value'],
+        mode='markers',
+        name='Outliers',
+        marker=dict(size=12, color='red', symbol='x', line=dict(width=2))
+    ))
+    
+    # Mean line
+    fig.add_hline(y=analyzer.mean, line_dash="dash", line_color="green", 
+                  annotation_text=f"Mean: {analyzer.mean:.2f}")
+    
+    # UCL line
+    fig.add_hline(y=analyzer.ucl, line_dash="dot", line_color="red", 
+                  annotation_text=f"UCL: {analyzer.ucl:.2f}")
+    
+    # LCL line
+    fig.add_hline(y=analyzer.lcl, line_dash="dot", line_color="red", 
+                  annotation_text=f"LCL: {analyzer.lcl:.2f}")
+    
+    fig.update_layout(
+        title='SPC Control Chart - Monthly Average',
+        xaxis_title='Date',
+        yaxis_title='Value',
+        hovermode='x unified',
+        height=400,
+        showlegend=True,
+        plot_bgcolor='white',
+        paper_bgcolor='white'
+    )
+    
+    fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='lightgray')
+    fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='lightgray')
+    
+    return fig
+
+def create_comparison_chart(stats):
+    """Create comparison bar chart"""
+    categories = ['Current Month', 'Previous Month', 'Same Month Last Year']
+    values = [stats['current_month'], stats['previous_month'], stats['same_month_last_year']]
+    
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c']
+    
+    fig = go.Figure(data=[
+        go.Bar(x=categories, y=values, marker_color=colors, text=values, 
+               texttemplate='%{text:.2f}', textposition='outside')
+    ])
+    
+    fig.update_layout(
+        title='Period Comparison',
+        yaxis_title='Average Value',
+        height=350,
+        showlegend=False,
+        plot_bgcolor='white',
+        paper_bgcolor='white'
+    )
+    
+    fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='lightgray')
+    
+    return fig
+
+def create_outliers_table(analyzer):
+    """Create table of outliers"""
+    outliers = analyzer.identify_outliers()
+    outliers = outliers.sort_values(by=analyzer.date_col, ascending=False).head(10)
+    
+    if len(outliers) == 0:
+        return html.Div("No outliers detected", style={'padding': '20px', 'textAlign': 'center'})
+    
+    outliers['Distance_from_Mean'] = outliers[analyzer.value_col] - analyzer.mean
+    
+    table_header = [
+        html.Thead(html.Tr([
+            html.Th('Date'),
+            html.Th('Value'),
+            html.Th('Distance from Mean'),
+            html.Th('Status')
+        ]))
+    ]
+    
+    rows = []
+    for _, row in outliers.iterrows():
+        status = 'Above UCL' if row[analyzer.value_col] > analyzer.ucl else 'Below LCL'
+        color = '#ffcccc' if status == 'Above UCL' else '#cce5ff'
+        
+        rows.append(html.Tr([
+            html.Td(row[analyzer.date_col].strftime('%Y-%m-%d')),
+            html.Td(f"{row[analyzer.value_col]:.2f}"),
+            html.Td(f"{row['Distance_from_Mean']:.2f}"),
+            html.Td(status)
+        ], style={'backgroundColor': color}))
+    
+    table_body = [html.Tbody(rows)]
+    
+    return html.Table(table_header + table_body, style={
+        'width': '100%',
+        'borderCollapse': 'collapse',
+        'backgroundColor': 'white',
+        'boxShadow': '0 2px 4px rgba(0,0,0,0.1)'
+    })
+
+# ============================================
+# 4. DASH APP CREATION
+# ============================================
+
+# Load or generate data
+df = generate_sample_data()
+analyzer = SPCAnalyzer(df)
+
+# Create Dash app
+app = Dash(__name__)
+
+# Get statistics
+stats = analyzer.get_current_month_stats()
+outliers = analyzer.identify_outliers()
+
+# Layout
+app.layout = html.Div([
+    html.H1('Statistical Process Control (SPC) Dashboard', 
+            style={'textAlign': 'center', 'color': '#333', 'padding': '20px'}),
+    
+    # KPI Cards Row
+    html.Div([
+        create_kpi_card('Current Month', stats['current_month'], stats['mom_pct']),
+        create_kpi_card('Process Mean', analyzer.mean, 0),
+        create_kpi_card('Outliers Count', len(outliers), 0),
+        create_kpi_card('MoM Change', stats['mom_change'], stats['mom_pct']),
+        create_kpi_card('YoY Change', stats['yoy_change'], stats['yoy_pct']),
+    ], style={'display': 'flex', 'justifyContent': 'space-around', 'marginBottom': '20px'}),
+    
+    # Main Control Chart
+    html.Div([
+        dcc.Graph(figure=create_control_chart(analyzer))
+    ], style={'margin': '20px'}),
+    
+    # Comparison Charts Row
+    html.Div([
+        html.Div([
+            dcc.Graph(figure=create_comparison_chart(stats))
+        ], style={'flex': '1', 'margin': '10px'}),
+        
+        html.Div([
+            html.H3('Recent Outliers', style={'textAlign': 'center', 'color': '#333'}),
+            create_outliers_table(analyzer)
+        ], style={'flex': '1', 'margin': '10px', 'backgroundColor': 'white', 
+                  'padding': '20px', 'borderRadius': '8px'})
+    ], style={'display': 'flex', 'margin': '20px'}),
+    
+    # Statistics Summary
+    html.Div([
+        html.H3('Control Limits Summary', style={'color': '#333'}),
+        html.P(f"Upper Control Limit (UCL): {analyzer.ucl:.2f}"),
+        html.P(f"Process Mean: {analyzer.mean:.2f}"),
+        html.P(f"Lower Control Limit (LCL): {analyzer.lcl:.2f}"),
+        html.P(f"Standard Deviation: {analyzer.std:.2f}"),
+        html.P(f"Total Outliers: {len(outliers)} ({len(outliers)/len(df)*100:.2f}% of data)")
+    ], style={'backgroundColor': 'white', 'padding': '20px', 'margin': '20px', 
+              'borderRadius': '8px', 'boxShadow': '0 2px 4px rgba(0,0,0,0.1)'})
+    
+], style={'backgroundColor': '#f5f5f5', 'minHeight': '100vh', 'fontFamily': 'Arial, sans-serif'})
+
+# ============================================
+# 5. RUN THE APP
+# ============================================
+
+if __name__ == '__main__':
+    print("\n" + "="*50)
+    print("SPC Dashboard Starting...")
+    print("="*50)
+    print(f"Process Mean: {analyzer.mean:.2f}")
+    print(f"UCL: {analyzer.ucl:.2f}")
+    print(f"LCL: {analyzer.lcl:.2f}")
+    print(f"Total Outliers: {len(outliers)}")
+    print("="*50)
+    print("\nOpen your browser and go to: http://127.0.0.1:8050/")
+    print("\nPress Ctrl+C to stop the server")
+    print("="*50 + "\n")
+    
+    app.run_server(debug=True, port=8050)
